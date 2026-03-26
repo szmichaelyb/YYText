@@ -20,6 +20,9 @@
 #elif __has_include(<YYImage/YYImage.h>)
 #import <YYImage/YYImage.h>
 #define YYTextAnimatedImageAvailable 1
+#elif __has_include(<YYWebImage/YYImage.h>)
+#import <YYWebImage/YYImage.h>
+#define YYTextAnimatedImageAvailable 1
 #else
 #define YYTextAnimatedImageAvailable 0
 #endif
@@ -84,26 +87,49 @@ NSString *const YYTextUTTypeWEBP = @"com.google.webp";
         [self addItems:@[item]];
     }
     [attributedString enumerateAttribute:YYTextAttachmentAttributeName inRange:NSMakeRange(0, attributedString.length) options:NSAttributedStringEnumerationLongestEffectiveRangeNotRequired usingBlock:^(YYTextAttachment *attachment, NSRange range, BOOL *stop) {
-        UIImage *img = attachment.content;
-        if ([img isKindOfClass:[UIImage class]]) {
-            NSDictionary *item = @{@"com.apple.uikit.image" : img};
+        
+        // save image
+        UIImage *simpleImage = nil;
+        if ([attachment.content isKindOfClass:[UIImage class]]) {
+            simpleImage = attachment.content;
+        } else if ([attachment.content isKindOfClass:[UIImageView class]]) {
+            simpleImage = ((UIImageView *)attachment.content).image;
+        }
+        if (simpleImage) {
+            NSDictionary *item = @{@"com.apple.uikit.image" : simpleImage};
             [self addItems:@[item]];
-            
+        }
+        
 #if YYTextAnimatedImageAvailable
-            if ([img isKindOfClass:[YYImage class]] && ((YYImage *)img).animatedImageData) {
-                if (((YYImage *)img).animatedImageType == YYImageTypeGIF) {
-                    NSDictionary *item = @{(id)kUTTypeGIF : ((YYImage *)img).animatedImageData};
-                    [self addItems:@[item]];
-                } else if (((YYImage *)img).animatedImageType == YYImageTypePNG) {
-                    NSDictionary *item = @{(id)kUTTypePNG : ((YYImage *)img).animatedImageData};
-                    [self addItems:@[item]];
-                } else if (((YYImage *)img).animatedImageType == YYImageTypeWebP) {
-                    NSDictionary *item = @{(id)YYTextUTTypeWEBP : ((YYImage *)img).animatedImageData};
-                    [self addItems:@[item]];
+        // save animated image
+        if ([attachment.content isKindOfClass:[UIImageView class]]) {
+            UIImageView *imageView = attachment.content;
+            Class aniImageClass = NSClassFromString(@"YYImage");
+            UIImage *image = imageView.image;
+            if (aniImageClass && [image isKindOfClass:aniImageClass]) {
+                NSData *data = [image valueForKey:@"animatedImageData"];
+                NSNumber *type = [image valueForKey:@"animatedImageType"];
+                if (data) {
+                    switch (type.unsignedIntegerValue) {
+                        case YYImageTypeGIF: {
+                            NSDictionary *item = @{(id)kUTTypeGIF : data};
+                            [self addItems:@[item]];
+                        } break;
+                        case YYImageTypePNG: { // APNG
+                            NSDictionary *item = @{(id)kUTTypePNG : data};
+                            [self addItems:@[item]];
+                        } break;
+                        case YYImageTypeWebP: {
+                            NSDictionary *item = @{(id)YYTextUTTypeWEBP : data};
+                            [self addItems:@[item]];
+                        } break;
+                        default: break;
+                    }
                 }
             }
-#endif
         }
+#endif
+        
     }];
 }
 

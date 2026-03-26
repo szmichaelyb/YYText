@@ -18,27 +18,62 @@
 @implementation YYTextEffectWindow
 
 + (instancetype)sharedWindow {
-    static YYTextEffectWindow *one;
+    static YYTextEffectWindow *one = nil;
+    if (one == nil) {
+        // iOS 9 compatible
+        NSString *mode = [NSRunLoop currentRunLoop].currentMode;
+        if (mode.length == 27 &&
+            [mode hasPrefix:@"UI"] &&
+            [mode hasSuffix:@"InitializationRunLoopMode"]) {
+            return nil;
+        }
+    }
+    
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        one = [self new];
-        one.frame = (CGRect){.size = YYTextScreenSize()};
-        one.userInteractionEnabled = NO;
-        one.windowLevel = UIWindowLevelStatusBar + 1;
-        one.hidden = NO;
-        
-        // for iOS 9:
-        one.opaque = NO;
-        one.backgroundColor = [UIColor clearColor];
-        one.layer.backgroundColor = [UIColor clearColor].CGColor;
+        if (!YYTextIsAppExtension()) {
+            one = [self new];
+            one.frame = (CGRect){.size = YYTextScreenSize()};
+            one.userInteractionEnabled = NO;
+            one.windowLevel = UIWindowLevelStatusBar + 1;
+            one.hidden = NO;
+            
+            // for iOS 9:
+            one.opaque = NO;
+            one.backgroundColor = [UIColor clearColor];
+            one.layer.backgroundColor = [UIColor clearColor].CGColor;
+        }
     });
     return one;
 }
 
+// stop self from becoming the KeyWindow
+- (void)becomeKeyWindow {
+    [[YYTextSharedApplication().delegate window] makeKeyWindow];
+}
+
+- (UIViewController *)rootViewController {
+    for (UIWindow *window in [YYTextSharedApplication() windows]) {
+        if (self == window) continue;
+        if (window.hidden) continue;
+        UIViewController *topViewController = window.rootViewController;
+        if (topViewController) return topViewController;
+    }
+    UIViewController *viewController = [super rootViewController];
+    if (!viewController) {
+        viewController = [UIViewController new];
+        [super setRootViewController:viewController];
+    }
+    return viewController;
+}
+
 // Bring self to front
 - (void)_updateWindowLevel {
-    UIWindow *top = [UIApplication sharedApplication].windows.lastObject;
-    UIWindow *key = [UIApplication sharedApplication].keyWindow;
+    UIApplication *app = YYTextSharedApplication();
+    if (!app) return;
+    
+    UIWindow *top = app.windows.lastObject;
+    UIWindow *key = app.keyWindow;
     if (key && key.windowLevel > top.windowLevel) top = key;
     if (top == self) return;
     self.windowLevel = top.windowLevel + 1;
@@ -97,7 +132,7 @@
 }
 
 - (CGPoint)_correctedCenter:(CGPoint)center forMagnifier:(YYTextMagnifier *)mag rotation:(CGFloat)rotation {
-    CGFloat degree = YYRadiansToDegrees(rotation);
+    CGFloat degree = YYTextRadiansToDegrees(rotation);
     
     degree /= 45.0;
     if (degree < 0) degree += (int)(-degree/8.0 + 1) * 8;
@@ -188,6 +223,8 @@
  @return Magnifier rotation radius.
  */
 - (CGFloat)_updateMagnifier:(YYTextMagnifier *)mag {
+    UIApplication *app = YYTextSharedApplication();
+    if (!app) return 0;
     
     UIView *hostView = mag.hostView;
     UIWindow *hostWindow = [hostView isKindOfClass:[UIWindow class]] ? (id)hostView : hostView.window;
@@ -198,8 +235,8 @@
     captureRect.origin.x = captureCenter.x - captureRect.size.width / 2;
     captureRect.origin.y = captureCenter.y - captureRect.size.height / 2;
     
-    CGAffineTransform trans = YYCGAffineTransformGetFromViews(hostView, self);
-    CGFloat rotation = YYCGAffineTransformGetRotation(trans);
+    CGAffineTransform trans = YYTextCGAffineTransformGetFromViews(hostView, self);
+    CGFloat rotation = YYTextCGAffineTransformGetRotation(trans);
     
     if (mag.captureDisabled) {
         if (!mag.snapshot || mag.snapshot.size.width > 1) {
@@ -231,8 +268,8 @@
     CGContextRotateCTM(context, -rotation);
     CGContextTranslateCTM(context, tp.x - captureCenter.x, tp.y - captureCenter.y);
     
-    NSMutableArray *windows = [UIApplication sharedApplication].windows.mutableCopy;
-    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+    NSMutableArray *windows = app.windows.mutableCopy;
+    UIWindow *keyWindow = app.keyWindow;
     if (![windows containsObject:keyWindow]) [windows addObject:keyWindow];
     [windows sortUsingComparator:^NSComparisonResult(UIWindow *w1, UIWindow *w2) {
         if (w1.windowLevel < w2.windowLevel) return NSOrderedAscending;
@@ -245,7 +282,7 @@
         if (window.screen != mainScreen) continue;
         if ([window isKindOfClass:self.class]) break; //don't capture window above self
         CGContextSaveGState(context);
-        CGContextConcatCTM(context, YYCGAffineTransformGetFromViews(window, self));
+        CGContextConcatCTM(context, YYTextCGAffineTransformGetFromViews(window, self));
         [window.layer renderInContext:context]; //render
         //[window drawViewHierarchyInRect:window.bounds afterScreenUpdates:NO]; //slower when capture whole window
         CGContextRestoreGState(context);
@@ -274,7 +311,7 @@
     if (mag.type == YYTextMagnifierTypeRanged) {
         mag.alpha = 0;
     }
-    NSTimeInterval time = mag.type == YYTextMagnifierTypeCaret ? 0.06 : 0.1;
+    NSTimeInterval time = mag.type == YYTextMagnifierTypeCaret ? 0.08 : 0.1;
     [UIView animateWithDuration:time delay:0 options:UIViewAnimationOptionCurveEaseInOut | UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState animations:^{
         if (mag.type == YYTextMagnifierTypeCaret) {
             CGPoint newCenter = CGPointMake(0, -mag.fitSize.height / 2);
@@ -358,8 +395,8 @@
         if (!dotInKeyboard) {
             CGRect hostRect = [selection.hostView convertRect:selection.hostView.bounds toView:self];
             CGRect intersection = CGRectIntersection(dotRect, hostRect);
-            if (YYCGRectGetArea(intersection) < YYCGRectGetArea(dotRect)) {
-                CGFloat dist = YYCGPointGetDistanceToRect(YYCGRectGetCenter(dotRect), hostRect);
+            if (YYTextCGRectGetArea(intersection) < YYTextCGRectGetArea(dotRect)) {
+                CGFloat dist = YYTextCGPointGetDistanceToRect(YYTextCGRectGetCenter(dotRect), hostRect);
                 if (dist < CGRectGetWidth(dot.frame) * 0.55) {
                     dot.mirror.hidden = NO;
                 }
@@ -367,7 +404,11 @@
         }
     }
     CGPoint center = [dot yy_convertPoint:CGPointMake(CGRectGetWidth(dot.frame) / 2, CGRectGetHeight(dot.frame) / 2) toViewOrWindow:self];
-    dot.mirror.center = center;
+    if (isnan(center.x) || isnan(center.y) || isinf(center.x) || isinf(center.y)) {
+        dot.mirror.hidden = YES;
+    } else {
+        dot.mirror.center = center;
+    }
 }
 
 - (void)showSelectionDot:(YYTextSelectionView *)selection {

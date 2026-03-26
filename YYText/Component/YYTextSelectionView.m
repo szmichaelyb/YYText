@@ -232,7 +232,7 @@
             caretRect.origin.x = self.bounds.size.width - caretRect.size.width;
         }
     }
-    caretRect = YYCGRectPixelRound(caretRect);
+    caretRect = YYTextCGRectPixelRound(caretRect);
     if (isnan(caretRect.origin.x) || isinf(caretRect.origin.x)) caretRect.origin.x = 0;
     if (isnan(caretRect.origin.y) || isinf(caretRect.origin.y)) caretRect.origin.y = 0;
     if (isnan(caretRect.size.width) || isinf(caretRect.size.width)) caretRect.size.width = 0;
@@ -243,6 +243,8 @@
 - (void)setCaretRect:(CGRect)caretRect {
     _caretRect = caretRect;
     self.caretView.frame = [self _standardCaretRect:caretRect];
+    CGFloat minWidth = MIN(self.caretView.bounds.size.width, self.caretView.bounds.size.height);
+    self.caretView.layer.cornerRadius = minWidth / 2;
 }
 
 - (void)setSelectionRects:(NSArray *)selectionRects {
@@ -257,7 +259,7 @@
     [selectionRects enumerateObjectsUsingBlock: ^(YYTextSelectionRect *r, NSUInteger idx, BOOL *stop) {
         CGRect rect = r.rect;
         rect = CGRectStandardize(rect);
-        rect = YYCGRectPixelRound(rect);
+        rect = YYTextCGRectPixelRound(rect);
         if (r.containsStart || r.containsEnd) {
             rect = [self _standardCaretRect:rect];
             if (r.containsStart) {
@@ -289,8 +291,8 @@
     CGRect startRect = [_startGrabber touchRect];
     CGRect endRect = [_endGrabber touchRect];
     if (CGRectIntersectsRect(startRect, endRect)) {
-        CGFloat distStart = YYCGPointGetDistanceToPoint(point, YYCGRectGetCenter(startRect));
-        CGFloat distEnd = YYCGPointGetDistanceToPoint(point, YYCGRectGetCenter(endRect));
+        CGFloat distStart = YYTextCGPointGetDistanceToPoint(point, YYTextCGRectGetCenter(startRect));
+        CGFloat distEnd = YYTextCGPointGetDistanceToPoint(point, YYTextCGRectGetCenter(endRect));
         if (distEnd <= distStart) return NO;
     }
     return CGRectContainsPoint(startRect, point);
@@ -301,8 +303,8 @@
     CGRect startRect = [_startGrabber touchRect];
     CGRect endRect = [_endGrabber touchRect];
     if (CGRectIntersectsRect(startRect, endRect)) {
-        CGFloat distStart = YYCGPointGetDistanceToPoint(point, YYCGRectGetCenter(startRect));
-        CGFloat distEnd = YYCGPointGetDistanceToPoint(point, YYCGRectGetCenter(endRect));
+        CGFloat distStart = YYTextCGPointGetDistanceToPoint(point, YYTextCGRectGetCenter(startRect));
+        CGFloat distEnd = YYTextCGPointGetDistanceToPoint(point, YYTextCGRectGetCenter(endRect));
         if (distEnd > distStart) return NO;
     }
     return CGRectContainsPoint(endRect, point);

@@ -11,6 +11,8 @@
 
 #import <UIKit/UIKit.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
 /**
  System keyboard transition information.
  Use -[YYTextKeyboardManager convertRect:toView:] to convert frame to specified view.
@@ -48,14 +50,14 @@ typedef struct {
 - (instancetype)init UNAVAILABLE_ATTRIBUTE;
 + (instancetype)new UNAVAILABLE_ATTRIBUTE;
 
-/// Get the default manager.
-+ (instancetype)defaultManager;
+/// Get the default manager (returns nil in App Extension).
++ (nullable instancetype)defaultManager;
 
 /// Get the keyboard window. nil if there's no keyboard window.
-@property (nonatomic, readonly) UIWindow *keyboardWindow;
+@property (nullable, nonatomic, readonly) UIWindow *keyboardWindow;
 
 /// Get the keyboard view. nil if there's no keyboard view.
-@property (nonatomic, readonly) UIView *keyboardView;
+@property (nullable, nonatomic, readonly) UIView *keyboardView;
 
 /// Whether the keyboard is visible.
 @property (nonatomic, readonly, getter=isKeyboardVisible) BOOL keyboardVisible;
@@ -89,6 +91,8 @@ typedef struct {
  @param view A specified view or window (pass nil to convert for main window).
  @return The converted rect in specifeid view.
  */
-- (CGRect)convertRect:(CGRect)rect toView:(UIView *)view;
+- (CGRect)convertRect:(CGRect)rect toView:(nullable UIView *)view;
 
 @end
+
+NS_ASSUME_NONNULL_END

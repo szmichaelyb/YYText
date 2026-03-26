@@ -30,7 +30,7 @@
     if (_CTLine) CFRelease(_CTLine);
 }
 
-- (void)setCTLine:(CTLineRef)CTLine {
+- (void)setCTLine:(_Nonnull CTLineRef)CTLine {
     if (_CTLine != CTLine) {
         if (CTLine) CFRetain(CTLine);
         if (_CTLine) CFRelease(_CTLine);
@@ -97,7 +97,7 @@
             runWidth = CTRunGetTypographicBounds(run, CFRangeMake(0, 0), &ascent, &descent, &leading);
             
             if (_vertical) {
-                YY_SWAP(runPosition.x, runPosition.y);
+                YYTEXT_SWAP(runPosition.x, runPosition.y);
                 runPosition.y = _position.y + runPosition.y;
                 runTypoBounds = CGRectMake(_position.x + runPosition.x - descent, runPosition.y , ascent + descent, runWidth);
             } else {
@@ -106,7 +106,7 @@
                 runTypoBounds = CGRectMake(runPosition.x, runPosition.y - ascent, runWidth, ascent + descent);
             }
             
-            NSRange runRange = YYNSRangeFromCFRange(CTRunGetStringRange(run));
+            NSRange runRange = YYTextNSRangeFromCFRange(CTRunGetStringRange(run));
             [attachments addObject:attachment];
             [attachmentRanges addObject:[NSValue valueWithRange:runRange]];
             [attachmentRects addObject:[NSValue valueWithCGRect:runTypoBounds]];

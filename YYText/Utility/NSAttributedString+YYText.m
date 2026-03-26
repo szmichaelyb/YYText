@@ -16,27 +16,17 @@
 #import "YYTextUtilities.h"
 #import <CoreFoundation/CoreFoundation.h>
 
-#if __has_include("YYImage.h")
-#import "YYImage.h"
-#define YYTextAnimatedImageAvailable 1
-#elif __has_include(<YYImage/YYImage.h>)
-#import <YYImage/YYImage.h>
-#define YYTextAnimatedImageAvailable 1
-#else
-#define YYTextAnimatedImageAvailable 0
-#endif
-
 
 // Dummy class for category
 @interface NSAttributedString_YYText : NSObject @end
 @implementation NSAttributedString_YYText @end
 
 
-static float _YYDeviceSystemVersion() {
-    static float version;
+static double _YYDeviceSystemVersion() {
+    static double version;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        version = [UIDevice currentDevice].systemVersion.floatValue;
+        version = [UIDevice currentDevice].systemVersion.doubleValue;
     });
     return version;
 }
@@ -88,13 +78,14 @@ static float _YYDeviceSystemVersion() {
 }
 
 - (NSDictionary *)yy_attributesAtIndex:(NSUInteger)index {
+    if (index > self.length || self.length == 0) return nil;
     if (self.length > 0 && index == self.length) index--;
     return [self attributesAtIndex:index effectiveRange:NULL];
 }
 
 - (id)yy_attribute:(NSString *)attributeName atIndex:(NSUInteger)index {
     if (!attributeName) return nil;
-    if (self.length == 0) return nil;
+    if (index > self.length || self.length == 0) return nil;
     if (self.length > 0 && index == self.length) index--;
     return [self attribute:attributeName atIndex:index effectiveRange:NULL];
 }
@@ -237,7 +228,7 @@ static float _YYDeviceSystemVersion() {
 - (UIColor *)yy_underlineColorAtIndex:(NSUInteger)index {
     UIColor *color = nil;
     if (kSystemVersion >= 7) {
-        [self yy_attribute:NSUnderlineColorAttributeName atIndex:index];
+        color = [self yy_attribute:NSUnderlineColorAttributeName atIndex:index];
     }
     if (!color) {
         CGColorRef ref = (__bridge CGColorRef)([self yy_attribute:(NSString *)kCTUnderlineColorAttributeName atIndex:index]);
@@ -599,20 +590,29 @@ return style. _attr_;
     switch (alignment) {
         case YYTextVerticalAlignmentTop: {
             delegate.ascent = font.ascender;
-            delegate.descent = attachmentSize.height + font.descender;
-            if (delegate.descent < 0) delegate.descent = 0;
+            delegate.descent = attachmentSize.height - font.ascender;
+            if (delegate.descent < 0) {
+                delegate.descent = 0;
+                delegate.ascent = attachmentSize.height;
+            }
         } break;
         case YYTextVerticalAlignmentCenter: {
             CGFloat fontHeight = font.ascender - font.descender;
             CGFloat yOffset = font.ascender - fontHeight * 0.5;
             delegate.ascent = attachmentSize.height * 0.5 + yOffset;
             delegate.descent = attachmentSize.height - delegate.ascent;
-            if (delegate.descent < 0) delegate.descent = 0;
+            if (delegate.descent < 0) {
+                delegate.descent = 0;
+                delegate.ascent = attachmentSize.height;
+            }
         } break;
         case YYTextVerticalAlignmentBottom: {
             delegate.ascent = attachmentSize.height + font.descender;
             delegate.descent = -font.descender;
-            if (delegate.ascent < 0) delegate.ascent = 0;
+            if (delegate.ascent < 0) {
+                delegate.ascent = 0;
+                delegate.descent = attachmentSize.height;
+            }
         } break;
         default: {
             delegate.ascent = attachmentSize.height;
@@ -634,17 +634,15 @@ return style. _attr_;
     BOOL hasAnim = NO;
     if (image.images.count > 1) {
         hasAnim = YES;
+    } else if (NSProtocolFromString(@"YYAnimatedImage") &&
+               [image conformsToProtocol:NSProtocolFromString(@"YYAnimatedImage")]) {
+        NSNumber *frameCount = [image valueForKey:@"animatedImageFrameCount"];
+        if (frameCount.intValue > 1) hasAnim = YES;
     }
-#if YYTextAnimatedImageAvailable
-    else if ([image conformsToProtocol:@protocol(YYAnimatedImage)]) {
-        id <YYAnimatedImage> ani = (id)image;
-        if (ani.animatedImageFrameCount > 1) hasAnim = YES;
-    }
-#endif
     
-    CGFloat ascent = YYEmojiGetAscentWithFontSize(fontSize);
-    CGFloat descent = YYEmojiGetDescentWithFontSize(fontSize);
-    CGRect bounding = YYEmojiGetGlyphBoundingRectWithFontSize(fontSize);
+    CGFloat ascent = YYTextEmojiGetAscentWithFontSize(fontSize);
+    CGFloat descent = YYTextEmojiGetDescentWithFontSize(fontSize);
+    CGRect bounding = YYTextEmojiGetGlyphBoundingRectWithFontSize(fontSize);
     
     YYTextRunDelegate *delegate = [YYTextRunDelegate new];
     delegate.ascent = ascent;
@@ -655,19 +653,13 @@ return style. _attr_;
     attachment.contentMode = UIViewContentModeScaleAspectFit;
     attachment.contentInsets = UIEdgeInsetsMake(ascent - (bounding.size.height + bounding.origin.y), bounding.origin.x, descent + bounding.origin.y, bounding.origin.x);
     if (hasAnim) {
-#if YYTextAnimatedImageAvailable
-        YYAnimatedImageView *view = [YYAnimatedImageView new];
+        Class imageClass = NSClassFromString(@"YYAnimatedImageView");
+        if (!imageClass) imageClass = [UIImageView class];
+        UIImageView *view = (id)[imageClass new];
         view.frame = bounding;
         view.image = image;
         view.contentMode = UIViewContentModeScaleAspectFit;
         attachment.content = view;
-#else
-        UIImageView *view = [UIImageView new];
-        view.frame = bounding;
-        view.image = image;
-        view.contentMode = UIViewContentModeScaleAspectFit;
-        attachment.content = view;
-#endif
     } else {
         attachment.content = image;
     }
@@ -833,7 +825,7 @@ return style. _attr_;
 }
 
 - (void)setYy_strikethroughColor:(UIColor *)strikethroughColor {
-    [self yy_setStrokeColor:strikethroughColor range:NSMakeRange(0, self.length)];
+    [self yy_setStrikethroughColor:strikethroughColor range:NSMakeRange(0, self.length)];
 }
 
 - (void)setYy_underlineStyle:(NSUnderlineStyle)underlineStyle {
@@ -1287,6 +1279,44 @@ return style. _attr_;
 - (void)yy_setTextGlyphTransform:(CGAffineTransform)textGlyphTransform range:(NSRange)range {
     NSValue *value = CGAffineTransformIsIdentity(textGlyphTransform) ? nil : [NSValue valueWithCGAffineTransform:textGlyphTransform];
     [self yy_setAttribute:YYTextGlyphTransformAttributeName value:value range:range];
+}
+
+- (void)yy_setTextHighlightRange:(NSRange)range
+                           color:(UIColor *)color
+                 backgroundColor:(UIColor *)backgroundColor
+                        userInfo:(NSDictionary *)userInfo
+                       tapAction:(YYTextAction)tapAction
+                 longPressAction:(YYTextAction)longPressAction {
+    YYTextHighlight *highlight = [YYTextHighlight highlightWithBackgroundColor:backgroundColor];
+    highlight.userInfo = userInfo;
+    highlight.tapAction = tapAction;
+    highlight.longPressAction = longPressAction;
+    if (color) [self yy_setColor:color range:range];
+    [self yy_setTextHighlight:highlight range:range];
+}
+
+- (void)yy_setTextHighlightRange:(NSRange)range
+                           color:(UIColor *)color
+                 backgroundColor:(UIColor *)backgroundColor
+                       tapAction:(YYTextAction)tapAction {
+    [self yy_setTextHighlightRange:range
+                         color:color
+               backgroundColor:backgroundColor
+                      userInfo:nil
+                     tapAction:tapAction
+               longPressAction:nil];
+}
+
+- (void)yy_setTextHighlightRange:(NSRange)range
+                           color:(UIColor *)color
+                 backgroundColor:(UIColor *)backgroundColor
+                        userInfo:(NSDictionary *)userInfo {
+    [self yy_setTextHighlightRange:range
+                         color:color
+               backgroundColor:backgroundColor
+                      userInfo:userInfo
+                     tapAction:nil
+               longPressAction:nil];
 }
 
 - (void)yy_insertString:(NSString *)string atIndex:(NSUInteger)location {

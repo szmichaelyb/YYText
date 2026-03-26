@@ -13,11 +13,13 @@
 
 #if __has_include(<YYText/YYText.h>)
 #import <YYText/YYTextMagnifier.h>
-#import <YYtext/YYTextSelectionView.h>
+#import <YYText/YYTextSelectionView.h>
 #else
 #import "YYTextMagnifier.h"
 #import "YYTextSelectionView.h"
 #endif
+
+NS_ASSUME_NONNULL_BEGIN
 
 /**
  A window to display magnifier and extra contents for text view.
@@ -27,8 +29,8 @@
  */
 @interface YYTextEffectWindow : UIWindow
 
-/// Returns the shared instance.
-+ (instancetype)sharedWindow;
+/// Returns the shared instance (returns nil in App Extension).
++ (nullable instancetype)sharedWindow;
 
 /// Show the magnifier in this window with a 'popup' animation. @param mag A magnifier.
 - (void)showMagnifier:(YYTextMagnifier *)mag;
@@ -46,3 +48,5 @@
 - (void)hideSelectionDot:(YYTextSelectionView *)selection;
 
 @end
+
+NS_ASSUME_NONNULL_END

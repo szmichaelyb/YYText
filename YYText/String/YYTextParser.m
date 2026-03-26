@@ -14,7 +14,6 @@
 #import "YYTextAttribute.h"
 #import "NSAttributedString+YYText.h"
 #import "NSParagraphStyle+YYText.h"
-#import <libkern/OSAtomic.h>
 
 
 #pragma mark - Markdown Parser
@@ -119,7 +118,7 @@
     _border.strokeColor = [UIColor colorWithWhite:0.546 alpha:0.650];
     _border.insets = UIEdgeInsetsMake(-1, 0, -1, 0);
     _border.cornerRadius = 2;
-    _border.strokeWidth = YYCGFloatFromPixel(1);
+    _border.strokeWidth = YYTextCGFloatFromPixel(1);
 }
 
 - (void)setColorWithDarkTheme {
@@ -136,7 +135,7 @@
     _border.strokeColor = [UIColor colorWithWhite:1.000 alpha:0.280];
     _border.insets = UIEdgeInsetsMake(-1, 0, -1, 0);
     _border.cornerRadius = 2;
-    _border.strokeWidth = YYCGFloatFromPixel(1);
+    _border.strokeWidth = YYTextCGFloatFromPixel(1);
 }
 
 - (NSUInteger)lenghOfBeginWhiteInString:(NSString *)str withRange:(NSRange)range{
@@ -285,7 +284,7 @@
             border.strokeColor = [UIColor colorWithWhite:0.200 alpha:0.300];
             border.insets = UIEdgeInsetsMake(-1, 0, -1, 0);
             border.cornerRadius = 3;
-            border.strokeWidth = YYCGFloatFromPixel(2);
+            border.strokeWidth = YYTextCGFloatFromPixel(2);
             [text yy_setTextBlockBorder:_border.copy range:codeR];
         }
     }];
@@ -300,19 +299,19 @@
 
 #pragma mark - Emoticon Parser
 
-#define LOCK(...) OSSpinLockLock(&_lock); \
+#define LOCK(...) dispatch_semaphore_wait(_lock, DISPATCH_TIME_FOREVER); \
 __VA_ARGS__; \
-OSSpinLockUnlock(&_lock);
+dispatch_semaphore_signal(_lock);
 
 @implementation YYTextSimpleEmoticonParser {
     NSRegularExpression *_regex;
     NSDictionary *_mapper;
-    OSSpinLock _lock;
+    dispatch_semaphore_t _lock;
 }
 
 - (instancetype)init {
     self = [super init];
-    _lock = OS_SPINLOCK_INIT;
+    _lock = dispatch_semaphore_create(1);
     return self;
 }
 

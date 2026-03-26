@@ -99,7 +99,7 @@ static int matrix_invert(__CLPK_integer N, double *matrix) {
     return error;
 }
 
-CGAffineTransform YYCGAffineTransformGetFromPoints(CGPoint before[3], CGPoint after[3]) {
+CGAffineTransform YYTextCGAffineTransformGetFromPoints(CGPoint before[3], CGPoint after[3]) {
     if (before == NULL || after == NULL) return CGAffineTransformIdentity;
     
     CGPoint p1, p2, p3, q1, q2, q3;
@@ -132,7 +132,7 @@ CGAffineTransform YYCGAffineTransformGetFromPoints(CGPoint before[3], CGPoint af
     return transform;
 }
 
-CGAffineTransform YYCGAffineTransformGetFromViews(UIView *from, UIView *to) {
+CGAffineTransform YYTextCGAffineTransformGetFromViews(UIView *from, UIView *to) {
     if (!from || !to) return CGAffineTransformIdentity;
     
     CGPoint before[3], after[3];
@@ -143,10 +143,10 @@ CGAffineTransform YYCGAffineTransformGetFromViews(UIView *from, UIView *to) {
     after[1] = [from yy_convertPoint:before[1] toViewOrWindow:to];
     after[2] = [from yy_convertPoint:before[2] toViewOrWindow:to];
     
-    return YYCGAffineTransformGetFromPoints(before, after);
+    return YYTextCGAffineTransformGetFromPoints(before, after);
 }
 
-UIViewContentMode YYCAGravityToUIViewContentMode(NSString *gravity) {
+UIViewContentMode YYTextCAGravityToUIViewContentMode(NSString *gravity) {
     static NSDictionary *dic;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -167,7 +167,7 @@ UIViewContentMode YYCAGravityToUIViewContentMode(NSString *gravity) {
     return (UIViewContentMode)((NSNumber *)dic[gravity]).integerValue;
 }
 
-NSString *YYUIViewContentModeToCAGravity(UIViewContentMode contentMode) {
+NSString *YYTextUIViewContentModeToCAGravity(UIViewContentMode contentMode) {
     switch (contentMode) {
         case UIViewContentModeScaleToFill: return kCAGravityResize;
         case UIViewContentModeScaleAspectFit: return kCAGravityResizeAspect;
@@ -186,7 +186,7 @@ NSString *YYUIViewContentModeToCAGravity(UIViewContentMode contentMode) {
     }
 }
 
-CGRect YYCGRectFitWithContentMode(CGRect rect, CGSize size, UIViewContentMode mode) {
+CGRect YYTextCGRectFitWithContentMode(CGRect rect, CGSize size, UIViewContentMode mode) {
     rect = CGRectStandardize(rect);
     size.width = size.width < 0 ? -size.width : size.width;
     size.height = size.height < 0 ? -size.height : size.height;
@@ -200,11 +200,18 @@ CGRect YYCGRectFitWithContentMode(CGRect rect, CGSize size, UIViewContentMode mo
                 rect.size = CGSizeZero;
             } else {
                 CGFloat scale;
-                if (size.width / size.height < rect.size.width / rect.size.height &&
-                    mode == UIViewContentModeScaleAspectFit) {
-                    scale = rect.size.height / size.height;
+                if (mode == UIViewContentModeScaleAspectFit) {
+                    if (size.width / size.height < rect.size.width / rect.size.height) {
+                        scale = rect.size.height / size.height;
+                    } else {
+                        scale = rect.size.width / size.width;
+                    }
                 } else {
-                    scale = rect.size.width / size.width;
+                    if (size.width / size.height < rect.size.width / rect.size.height) {
+                        scale = rect.size.width / size.width;
+                    } else {
+                        scale = rect.size.height / size.height;
+                    }
                 }
                 size.width *= scale;
                 size.height *= scale;
@@ -280,4 +287,23 @@ CGSize YYTextScreenSize() {
         }
     });
     return size;
+}
+
+
+BOOL YYTextIsAppExtension() {
+    static BOOL isAppExtension = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cls = NSClassFromString(@"UIApplication");
+        if(!cls || ![cls respondsToSelector:@selector(sharedApplication)]) isAppExtension = YES;
+        if ([[[NSBundle mainBundle] bundlePath] hasSuffix:@".appex"]) isAppExtension = YES;
+    });
+    return isAppExtension;
+}
+
+UIApplication *YYTextSharedApplication() {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wundeclared-selector"
+    return YYTextIsAppExtension() ? nil : [UIApplication performSelector:@selector(sharedApplication)];
+#pragma clang diagnostic pop
 }

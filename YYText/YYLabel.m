@@ -14,22 +14,12 @@
 #import "YYTextWeakProxy.h"
 #import "YYTextUtilities.h"
 #import "NSAttributedString+YYText.h"
-
-#if __has_include("YYDispatchQueuePool.h")
-#import "YYDispatchQueuePool.h"
-#else
 #import <libkern/OSAtomic.h>
-#endif
 
-#ifdef YYDispatchQueuePool_h
-static dispatch_queue_t YYLabelGetReleaseQueue() {
-    return YYDispatchQueueGetForQOS(NSQualityOfServiceUtility);
-}
-#else
+
 static dispatch_queue_t YYLabelGetReleaseQueue() {
     return dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
 }
-#endif
 
 
 #define kLongPressMinimumDuration 0.5 // Time in seconds the fingers must be held down for long press gesture.
@@ -50,6 +40,9 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     YYTextHighlight *_highlight; ///< highlight attribute in `_highlightRange`
     YYTextLayout *_highlightLayout; ///< when _state.showingHighlight=YES, this layout should be displayed
     
+    YYTextLayout *_shrinkInnerLayout;
+    YYTextLayout *_shrinkHighlightLayout;
+    
     NSTimer *_longPressTimer;
     CGPoint _touchBeganPoint;
     
@@ -60,6 +53,9 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
         unsigned int trackingTouch : 1;
         unsigned int swallowTouch : 1;
         unsigned int touchMoved : 1;
+        
+        unsigned int hasTapAction : 1;
+        unsigned int hasLongPressAction : 1;
         
         unsigned int contentsNeedFade : 1;
     } _state;
@@ -81,6 +77,7 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
 
 - (void)_updateLayout {
     _innerLayout = [YYTextLayout layoutWithContainer:_innerContainer text:_innerText];
+    _shrinkInnerLayout = [YYLabel _shrinkLayoutWithLayout:_innerLayout];
 }
 
 - (void)_setLayoutNeedUpdate {
@@ -97,6 +94,7 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (!_innerLayout) return;
     YYTextLayout *layout = _innerLayout;
     _innerLayout = nil;
+    _shrinkInnerLayout = nil;
     dispatch_async(YYLabelGetReleaseQueue(), ^{
         NSAttributedString *text = [layout text]; // capture to block and release in background
         if (layout.attachments.count) {
@@ -105,6 +103,31 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
             });
         }
     });
+}
+
+- (YYTextLayout *)_innerLayout {
+    return _shrinkInnerLayout ? _shrinkInnerLayout : _innerLayout;
+}
+
+- (YYTextLayout *)_highlightLayout {
+    return _shrinkHighlightLayout ? _shrinkHighlightLayout : _highlightLayout;
+}
+
++ (YYTextLayout *)_shrinkLayoutWithLayout:(YYTextLayout *)layout {
+    if (layout.text.length && layout.lines.count == 0) {
+        YYTextContainer *container = layout.container.copy;
+        container.maximumNumberOfRows = 1;
+        CGSize containerSize = container.size;
+        if (!container.verticalForm) {
+            containerSize.height = YYTextContainerMaxSize.height;
+        } else {
+            containerSize.width = YYTextContainerMaxSize.width;
+        }
+        container.size = containerSize;
+        return [YYTextLayout layoutWithContainer:container text:layout.text];
+    } else {
+        return nil;
+    }
 }
 
 - (void)_startLongPressTimer {
@@ -124,10 +147,26 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
 
 - (void)_trackDidLongPress {
     [self _endLongPressTimer];
+    if (_state.hasLongPressAction && _textLongPressAction) {
+        NSRange range = NSMakeRange(NSNotFound, 0);
+        CGRect rect = CGRectNull;
+        CGPoint point = [self _convertPointToLayout:_touchBeganPoint];
+        YYTextRange *textRange = [self._innerLayout textRangeAtPoint:point];
+        CGRect textRect = [self._innerLayout rectForRange:textRange];
+        textRect = [self _convertRectFromLayout:textRect];
+        if (textRange) {
+            range = textRange.asRange;
+            rect = textRect;
+        }
+        _textLongPressAction(self, _innerText, range, rect);
+    }
     if (_highlight) {
         YYTextAction longPressAction = _highlight.longPressAction ? _highlight.longPressAction : _highlightLongPressAction;
         if (longPressAction) {
-            CGRect rect = [_innerLayout rectForRange:[YYTextRange rangeWithRange:_highlightRange]];
+            YYTextPosition *start = [YYTextPosition positionWithOffset:_highlightRange.location];
+            YYTextPosition *end = [YYTextPosition positionWithOffset:_highlightRange.location + _highlightRange.length affinity:YYTextAffinityBackward];
+            YYTextRange *range = [YYTextRange rangeWithStart:start end:end];
+            CGRect rect = [self._innerLayout rectForRange:range];
             rect = [self _convertRectFromLayout:rect];
             longPressAction(self, _innerText, _highlightRange, rect);
             [self _removeHighlightAnimated:YES];
@@ -137,9 +176,9 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
 }
 
 - (YYTextHighlight *)_getHighlightAtPoint:(CGPoint)point range:(NSRangePointer)range {
-    if (!_innerLayout.containsHighlight) return nil;
+    if (!self._innerLayout.containsHighlight) return nil;
     point = [self _convertPointToLayout:point];
-    YYTextRange *textRange = [_innerLayout textRangeAtPoint:point];
+    YYTextRange *textRange = [self._innerLayout textRangeAtPoint:point];
     if (!textRange) return nil;
     
     NSUInteger startIndex = textRange.start.offset;
@@ -168,6 +207,7 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
             [hiText yy_setAttribute:key value:value range:_highlightRange];
         }];
         _highlightLayout = [YYTextLayout layoutWithContainer:_innerContainer text:hiText];
+        _shrinkHighlightLayout = [YYLabel _shrinkLayoutWithLayout:_highlightLayout];
         if (!_highlightLayout) _highlight = nil;
     }
     
@@ -190,6 +230,7 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     [self _hideHighlightAnimated:animated];
     _highlight = nil;
     _highlightLayout = nil;
+    _shrinkHighlightLayout = nil;
 }
 
 - (void)_endTouch {
@@ -199,11 +240,11 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
 }
 
 - (CGPoint)_convertPointToLayout:(CGPoint)point {
-    CGSize boundingSize = _innerLayout.textBoundingSize;
-    if (_innerLayout.container.isVerticalForm) {
-        CGFloat w = _innerLayout.textBoundingSize.width;
+    CGSize boundingSize = self._innerLayout.textBoundingSize;
+    if (self._innerLayout.container.isVerticalForm) {
+        CGFloat w = self._innerLayout.textBoundingSize.width;
         if (w < self.bounds.size.width) w = self.bounds.size.width;
-        point.x += _innerLayout.container.size.width - w;
+        point.x += self._innerLayout.container.size.width - w;
         if (_textVerticalAlignment == YYTextVerticalAlignmentCenter) {
             point.x += (self.bounds.size.width - boundingSize.width) * 0.5;
         } else if (_textVerticalAlignment == YYTextVerticalAlignmentBottom) {
@@ -221,11 +262,11 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
 }
 
 - (CGPoint)_convertPointFromLayout:(CGPoint)point {
-    CGSize boundingSize = _innerLayout.textBoundingSize;
-    if (_innerLayout.container.isVerticalForm) {
-        CGFloat w = _innerLayout.textBoundingSize.width;
+    CGSize boundingSize = self._innerLayout.textBoundingSize;
+    if (self._innerLayout.container.isVerticalForm) {
+        CGFloat w = self._innerLayout.textBoundingSize.width;
         if (w < self.bounds.size.width) w = self.bounds.size.width;
-        point.x -= _innerLayout.container.size.width - w;
+        point.x -= self._innerLayout.container.size.width - w;
         if (boundingSize.width < self.bounds.size.width) {
             if (_textVerticalAlignment == YYTextVerticalAlignmentCenter) {
                 point.x -= (self.bounds.size.width - boundingSize.width) * 0.5;
@@ -264,7 +305,11 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (!_shadowColor || _shadowBlurRadius < 0) return nil;
     NSShadow *shadow = [NSShadow new];
     shadow.shadowColor = _shadowColor;
+#if !TARGET_INTERFACE_BUILDER
     shadow.shadowOffset = _shadowOffset;
+#else
+    shadow.shadowOffset = CGSizeMake(_shadowOffset.x, _shadowOffset.y);
+#endif
     shadow.shadowBlurRadius = _shadowBlurRadius;
     return shadow;
 }
@@ -291,12 +336,19 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
 - (void)_updateOuterTextProperties {
     _text = [_innerText yy_plainTextForRange:NSMakeRange(0, _innerText.length)];
     _font = _innerText.yy_font;
+    if (!_font) _font = [self _defaultFont];
     _textColor = _innerText.yy_color;
+    if (!_textColor) _textColor = [UIColor blackColor];
     _textAlignment = _innerText.yy_alignment;
     _lineBreakMode = _innerText.yy_lineBreakMode;
     NSShadow *shadow = _innerText.yy_shadow;
     _shadowColor = shadow.shadowColor;
+#if !TARGET_INTERFACE_BUILDER
     _shadowOffset = shadow.shadowOffset;
+#else
+    _shadowOffset = CGPointMake(shadow.shadowOffset.width, shadow.shadowOffset.height);
+#endif
+    
     _shadowBlurRadius = shadow.shadowBlurRadius;
     _attributedText = _innerText;
     [self _updateOuterLineBreakMode];
@@ -334,8 +386,11 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     _debugOption = [YYTextDebugOption sharedDebugOption];
     [YYTextDebugOption addDebugTarget:self];
     
+    _font = [self _defaultFont];
+    _textColor = [UIColor blackColor];
     _textVerticalAlignment = YYTextVerticalAlignmentCenter;
     _numberOfLines = 1;
+    _textAlignment = NSTextAlignmentNatural;
     _lineBreakMode = NSLineBreakByTruncatingTail;
     _innerText = [NSMutableAttributedString new];
     _innerContainer = [YYTextContainer new];
@@ -351,11 +406,12 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
 #pragma mark - Override
 
 - (instancetype)initWithFrame:(CGRect)frame {
-    self = [super initWithFrame:frame];
+    self = [super initWithFrame:CGRectZero];
     if (!self) return nil;
     self.backgroundColor = [UIColor clearColor];
     self.opaque = NO;
     [self _initLabel];
+    self.frame = frame;
     return self;
 }
 
@@ -374,7 +430,9 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     CGSize newSize = self.bounds.size;
     if (!CGSizeEqualToSize(oldSize, newSize)) {
         _innerContainer.size = self.bounds.size;
-        _state.layoutNeedUpdate = YES;
+        if (!_ignoreCommonProperties) {
+            _state.layoutNeedUpdate = YES;
+        }
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
@@ -388,17 +446,54 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     CGSize newSize = self.bounds.size;
     if (!CGSizeEqualToSize(oldSize, newSize)) {
         _innerContainer.size = self.bounds.size;
+        if (!_ignoreCommonProperties) {
+            _state.layoutNeedUpdate = YES;
+        }
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
-        [self _setLayoutNeedUpdate];
+        [self _setLayoutNeedRedraw];
     }
 }
 
 - (CGSize)sizeThatFits:(CGSize)size {
-    [self _updateIfNeeded];
-    if (!_innerLayout) return size;
-    return [_innerLayout textBoundingSize];
+    if (_ignoreCommonProperties) {
+        return _innerLayout.textBoundingSize;
+    }
+    
+    if (!_verticalForm && size.width <= 0) size.width = YYTextContainerMaxSize.width;
+    if (_verticalForm && size.height <= 0) size.height = YYTextContainerMaxSize.height;
+    
+    if ((!_verticalForm && size.width == self.bounds.size.width) ||
+        (_verticalForm && size.height == self.bounds.size.height)) {
+        [self _updateIfNeeded];
+        YYTextLayout *layout = self._innerLayout;
+        BOOL contains = NO;
+        if (layout.container.maximumNumberOfRows == 0) {
+            if (layout.truncatedLine == nil) {
+                contains = YES;
+            }
+        } else {
+            if (layout.rowCount <= layout.container.maximumNumberOfRows) {
+                contains = YES;
+            }
+        }
+        if (contains) {
+            return layout.textBoundingSize;
+        }
+    }
+    
+    if (!_verticalForm) {
+        size.height = YYTextContainerMaxSize.height;
+    } else {
+        size.width = YYTextContainerMaxSize.width;
+    }
+    
+    YYTextContainer *container = [_innerContainer copy];
+    container.size = size;
+    
+    YYTextLayout *layout = [YYTextLayout layoutWithContainer:container text:_innerText];
+    return layout.textBoundingSize;
 }
 
 - (NSString *)accessibilityLabel {
@@ -417,7 +512,11 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     self = [super initWithCoder:aDecoder];
     [self _initLabel];
     YYTextContainer *innerContainer = [aDecoder decodeObjectForKey:@"innerContainer"];
-    if (innerContainer) _innerContainer = innerContainer;
+    if (innerContainer) {
+        _innerContainer = innerContainer;
+    } else {
+        _innerContainer.size = self.bounds.size;
+    }
     [self _updateOuterContainerProperties];
     self.attributedText = [aDecoder decodeObjectForKey:@"attributedText"];
     [self _setLayoutNeedUpdate];
@@ -433,14 +532,17 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     
     _highlight = [self _getHighlightAtPoint:point range:&_highlightRange];
     _highlightLayout = nil;
+    _shrinkHighlightLayout = nil;
+    _state.hasTapAction = _textTapAction != nil;
+    _state.hasLongPressAction = _textLongPressAction != nil;
     
-    if (_highlight) {
+    if (_highlight || _textTapAction || _textLongPressAction) {
         _touchBeganPoint = point;
         _state.trackingTouch = YES;
         _state.swallowTouch = YES;
         _state.touchMoved = NO;
         [self _startLongPressTimer];
-        [self _showHighlightAnimated:NO];
+        if (_highlight) [self _showHighlightAnimated:NO];
     } else {
         _state.trackingTouch = NO;
         _state.swallowTouch = NO;
@@ -470,7 +572,7 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
                 [self _endLongPressTimer];
             }
         }
-        if (_state.touchMoved) {
+        if (_state.touchMoved && _highlight) {
             YYTextHighlight *highlight = [self _getHighlightAtPoint:point range:NULL];
             if (highlight == _highlight) {
                 [self _showHighlightAnimated:_fadeOnHighlight];
@@ -491,15 +593,34 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     
     if (_state.trackingTouch) {
         [self _endLongPressTimer];
-        if (!_state.touchMoved || [self _getHighlightAtPoint:point range:NULL] == _highlight) {
-            YYTextAction tapAction = _highlight.tapAction ? _highlight.tapAction : _highlightTapAction;
-            if (tapAction) {
-                CGRect rect = [_innerLayout rectForRange:[YYTextRange rangeWithRange:_highlightRange]];
-                rect = [self _convertRectFromLayout:rect];
-                tapAction(self, _innerText, _highlightRange, rect);
+        if (!_state.touchMoved && _textTapAction) {
+            NSRange range = NSMakeRange(NSNotFound, 0);
+            CGRect rect = CGRectNull;
+            CGPoint point = [self _convertPointToLayout:_touchBeganPoint];
+            YYTextRange *textRange = [self._innerLayout textRangeAtPoint:point];
+            CGRect textRect = [self._innerLayout rectForRange:textRange];
+            textRect = [self _convertRectFromLayout:textRect];
+            if (textRange) {
+                range = textRange.asRange;
+                rect = textRect;
             }
+            _textTapAction(self, _innerText, range, rect);
         }
-        [self _removeHighlightAnimated:_fadeOnHighlight];
+        
+        if (_highlight) {
+            if (!_state.touchMoved || [self _getHighlightAtPoint:point range:NULL] == _highlight) {
+                YYTextAction tapAction = _highlight.tapAction ? _highlight.tapAction : _highlightTapAction;
+                if (tapAction) {
+                    YYTextPosition *start = [YYTextPosition positionWithOffset:_highlightRange.location];
+                    YYTextPosition *end = [YYTextPosition positionWithOffset:_highlightRange.location + _highlightRange.length affinity:YYTextAffinityBackward];
+                    YYTextRange *range = [YYTextRange rangeWithStart:start end:end];
+                    CGRect rect = [self._innerLayout rectForRange:range];
+                    rect = [self _convertRectFromLayout:rect];
+                    tapAction(self, _innerText, _highlightRange, rect);
+                }
+            }
+            [self _removeHighlightAnimated:_fadeOnHighlight];
+        }
     }
     
     if (!_state.swallowTouch) {
@@ -519,8 +640,9 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     _text = text.copy;
     BOOL needAddAttributes = _innerText.length == 0 && text.length > 0;
     [_innerText replaceCharactersInRange:NSMakeRange(0, _innerText.length) withString:text ? text : @""];
+    [_innerText yy_removeDiscontinuousAttributesInRange:NSMakeRange(0, _innerText.length)];
     if (needAddAttributes) {
-        _innerText.yy_font = _font ? _font : [self _defaultFont];
+        _innerText.yy_font = _font;
         _innerText.yy_color = _textColor;
         _innerText.yy_shadow = [self _shadowFromProperties];
         _innerText.yy_alignment = _textAlignment;
@@ -541,31 +663,41 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if ([_textParser parseText:_innerText selectedRange:NULL]) {
         [self _updateOuterTextProperties];
     }
-    if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
-        [self _clearContents];
-    }
-    [self _setLayoutNeedUpdate];
-    [self _endTouch];
-}
-
-- (void)setFont:(UIFont *)font {
-    if (_font == font || [_font isEqual:font]) return;
-    _font = font;
-    _innerText.yy_font = _font ? _font : [self _defaultFont];
-    if (_innerText.length) {
+    if (!_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
+    }
+}
+
+- (void)setFont:(UIFont *)font {
+    if (!font) {
+        font = [self _defaultFont];
+    }
+    if (_font == font || [_font isEqual:font]) return;
+    _font = font;
+    _innerText.yy_font = _font;
+    if (_innerText.length && !_ignoreCommonProperties) {
+        if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
+            [self _clearContents];
+        }
+        [self _setLayoutNeedUpdate];
+        [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
 - (void)setTextColor:(UIColor *)textColor {
+    if (!textColor) {
+        textColor = [UIColor blackColor];
+    }
     if (_textColor == textColor || [_textColor isEqual:textColor]) return;
     _textColor = textColor;
     _innerText.yy_color = textColor;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
@@ -577,7 +709,7 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_shadowColor == shadowColor || [_shadowColor isEqual:shadowColor]) return;
     _shadowColor = shadowColor;
     _innerText.yy_shadow = [self _shadowFromProperties];
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
@@ -585,23 +717,37 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     }
 }
 
+#if !TARGET_INTERFACE_BUILDER
 - (void)setShadowOffset:(CGSize)shadowOffset {
     if (CGSizeEqualToSize(_shadowOffset, shadowOffset)) return;
     _shadowOffset = shadowOffset;
     _innerText.yy_shadow = [self _shadowFromProperties];
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
     }
 }
+#else
+- (void)setShadowOffset:(CGPoint)shadowOffset {
+    if (CGPointEqualToPoint(_shadowOffset, shadowOffset)) return;
+    _shadowOffset = shadowOffset;
+    _innerText.yy_shadow = [self _shadowFromProperties];
+    if (_innerText.length && !_ignoreCommonProperties) {
+        if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
+            [self _clearContents];
+        }
+        [self _setLayoutNeedUpdate];
+    }
+}
+#endif
 
 - (void)setShadowBlurRadius:(CGFloat)shadowBlurRadius {
     if (_shadowBlurRadius == shadowBlurRadius) return;
     _shadowBlurRadius = shadowBlurRadius;
     _innerText.yy_shadow = [self _shadowFromProperties];
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
@@ -613,12 +759,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_textAlignment == textAlignment) return;
     _textAlignment = textAlignment;
     _innerText.yy_alignment = textAlignment;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -648,24 +795,26 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
         } break;
         default: break;
     }
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
 - (void)setTextVerticalAlignment:(YYTextVerticalAlignment)textVerticalAlignment {
     if (_textVerticalAlignment == textVerticalAlignment) return;
     _textVerticalAlignment = textVerticalAlignment;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -673,12 +822,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_truncationToken == truncationToken || [_truncationToken isEqual:truncationToken]) return;
     _truncationToken = truncationToken.copy;
     _innerContainer.truncationToken = truncationToken;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -686,12 +836,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_numberOfLines == numberOfLines) return;
     _numberOfLines = numberOfLines;
     _innerContainer.maximumNumberOfRows = numberOfLines;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -714,12 +865,16 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     } else {
         _innerText = [NSMutableAttributedString new];
     }
-    if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
-        [self _clearContents];
+    [_textParser parseText:_innerText selectedRange:NULL];
+    if (!_ignoreCommonProperties) {
+        if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
+            [self _clearContents];
+        }
+        [self _updateOuterTextProperties];
+        [self _setLayoutNeedUpdate];
+        [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
-    [self _updateOuterTextProperties];
-    [self _setLayoutNeedUpdate];
-    [self _endTouch];
 }
 
 - (void)setTextContainerPath:(UIBezierPath *)textContainerPath {
@@ -730,12 +885,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
         _innerContainer.size = self.bounds.size;
         _innerContainer.insets = _textContainerInset;
     }
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -743,12 +899,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_exclusionPaths == exclusionPaths || [_exclusionPaths isEqual:exclusionPaths]) return;
     _exclusionPaths = exclusionPaths.copy;
     _innerContainer.exclusionPaths = exclusionPaths;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -756,12 +913,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (UIEdgeInsetsEqualToEdgeInsets(_textContainerInset, textContainerInset)) return;
     _textContainerInset = textContainerInset;
     _innerContainer.insets = textContainerInset;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -769,12 +927,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_verticalForm == verticalForm) return;
     _verticalForm = verticalForm;
     _innerContainer.verticalForm = verticalForm;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -782,12 +941,13 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_linePositionModifier == linePositionModifier) return;
     _linePositionModifier = linePositionModifier;
     _innerContainer.linePositionModifier = linePositionModifier;
-    if (_innerText.length) {
+    if (_innerText.length && !_ignoreCommonProperties) {
         if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
             [self _clearContents];
         }
         [self _setLayoutNeedUpdate];
         [self _endTouch];
+        [self invalidateIntrinsicContentSize];
     }
 }
 
@@ -795,17 +955,21 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     if (_textParser == textParser || [_textParser isEqual:textParser]) return;
     _textParser = textParser;
     if ([_textParser parseText:_innerText selectedRange:NULL]) {
-        if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
-            [self _clearContents];
-        }
         [self _updateOuterTextProperties];
-        [self _setLayoutNeedUpdate];
-        [self _endTouch];
+        if (!_ignoreCommonProperties) {
+            if (_displaysAsynchronously && _clearContentsBeforeAsynchronouslyDisplay) {
+                [self _clearContents];
+            }
+            [self _setLayoutNeedUpdate];
+            [self _endTouch];
+            [self invalidateIntrinsicContentSize];
+        }
     }
 }
 
 - (void)setTextLayout:(YYTextLayout *)textLayout {
     _innerLayout = textLayout;
+    _shrinkInnerLayout = nil;
     
     if (_ignoreCommonProperties) {
         _innerText = (NSMutableAttributedString *)textLayout.text;
@@ -832,6 +996,7 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     _state.layoutNeedUpdate = NO;
     [self _setLayoutNeedRedraw];
     [self _endTouch];
+    [self invalidateIntrinsicContentSize];
 }
 
 - (YYTextLayout *)textLayout {
@@ -839,17 +1004,54 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     return _innerLayout;
 }
 
+- (void)setDisplaysAsynchronously:(BOOL)displaysAsynchronously {
+    _displaysAsynchronously = displaysAsynchronously;
+    ((YYTextAsyncLayer *)self.layer).displaysAsynchronously = displaysAsynchronously;
+}
+
+#pragma mark - AutoLayout
+
+- (void)setPreferredMaxLayoutWidth:(CGFloat)preferredMaxLayoutWidth {
+    if (_preferredMaxLayoutWidth == preferredMaxLayoutWidth) return;
+    _preferredMaxLayoutWidth = preferredMaxLayoutWidth;
+    [self invalidateIntrinsicContentSize];
+}
+
+- (CGSize)intrinsicContentSize {
+    if (_preferredMaxLayoutWidth == 0) {
+        YYTextContainer *container = [_innerContainer copy];
+        container.size = YYTextContainerMaxSize;
+        
+        YYTextLayout *layout = [YYTextLayout layoutWithContainer:container text:_innerText];
+        return layout.textBoundingSize;
+    }
+    
+    CGSize containerSize = _innerContainer.size;
+    if (!_verticalForm) {
+        containerSize.height = YYTextContainerMaxSize.height;
+        containerSize.width = _preferredMaxLayoutWidth;
+        if (containerSize.width == 0) containerSize.width = self.bounds.size.width;
+    } else {
+        containerSize.width = YYTextContainerMaxSize.width;
+        containerSize.height = _preferredMaxLayoutWidth;
+        if (containerSize.height == 0) containerSize.height = self.bounds.size.height;
+    }
+    
+    YYTextContainer *container = [_innerContainer copy];
+    container.size = containerSize;
+    
+    YYTextLayout *layout = [YYTextLayout layoutWithContainer:container text:_innerText];
+    return layout.textBoundingSize;
+}
+
+#pragma mark - YYTextDebugTarget
+
 - (void)setDebugOption:(YYTextDebugOption *)debugOption {
     BOOL needDraw = _debugOption.needDrawDebug;
     _debugOption = debugOption.copy;
     if (_debugOption.needDrawDebug != needDraw) {
         [self _setLayoutNeedRedraw];
     }
-}
-
-- (void)setDisplaysAsynchronously:(BOOL)displaysAsynchronously {
-    _displaysAsynchronously = displaysAsynchronously;
-    ((YYTextAsyncLayer *)self.layer).displaysAsynchronously = displaysAsynchronously;
 }
 
 #pragma mark - YYTextAsyncLayerDelegate
@@ -866,7 +1068,8 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     NSMutableArray *attachmentLayers = _attachmentLayers;
     BOOL layoutNeedUpdate = _state.layoutNeedUpdate;
     BOOL fadeForAsync = _displaysAsynchronously && _fadeOnAsynchronouslyDisplay;
-    __block YYTextLayout *layout = (_state.showingHighlight && _highlightLayout) ? _highlightLayout : _innerLayout;
+    __block YYTextLayout *layout = (_state.showingHighlight && _highlightLayout) ? self._highlightLayout : self._innerLayout;
+    __block YYTextLayout *shrinkLayout = nil;
     __block BOOL layoutUpdated = NO;
     if (layoutNeedUpdate) {
         text = text.copy;
@@ -883,12 +1086,16 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
         // the attachment should be removed.
         for (UIView *view in attachmentViews) {
             if (layoutNeedUpdate || ![layout.attachmentContentsSet containsObject:view]) {
-                [view removeFromSuperview];
+                if (view.superview == self) {
+                    [view removeFromSuperview];
+                }
             }
         }
         for (CALayer *layer in attachmentLayers) {
             if (layoutNeedUpdate || ![layout.attachmentContentsSet containsObject:layer]) {
-                [layer removeFromSuperlayer];
+                if (layer.superlayer == self.layer) {
+                    [layer removeFromSuperlayer];
+                }
             }
         }
         [attachmentViews removeAllObjects];
@@ -899,35 +1106,42 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
         if (isCancelled()) return;
         if (text.length == 0) return;
         
+        YYTextLayout *drawLayout = layout;
         if (layoutNeedUpdate) {
             layout = [YYTextLayout layoutWithContainer:container text:text];
+            shrinkLayout = [YYLabel _shrinkLayoutWithLayout:layout];
             if (isCancelled()) return;
             layoutUpdated = YES;
+            drawLayout = shrinkLayout ? shrinkLayout : layout;
         }
         
-        CGSize boundingSize = layout.textBoundingSize;
+        CGSize boundingSize = drawLayout.textBoundingSize;
         CGPoint point = CGPointZero;
         if (verticalAlignment == YYTextVerticalAlignmentCenter) {
-            if (layout.container.isVerticalForm) {
-                point.x = (size.width - boundingSize.width) * 0.5;
+            if (drawLayout.container.isVerticalForm) {
+                point.x = -(size.width - boundingSize.width) * 0.5;
             } else {
                 point.y = (size.height - boundingSize.height) * 0.5;
             }
         } else if (verticalAlignment == YYTextVerticalAlignmentBottom) {
-            if (layout.container.isVerticalForm) {
-                point.x = (size.width - boundingSize.width);
+            if (drawLayout.container.isVerticalForm) {
+                point.x = -(size.width - boundingSize.width);
             } else {
                 point.y = (size.height - boundingSize.height);
             }
         }
-        point = YYCGPointPixelRound(point);
-        [layout drawInContext:context size:size point:point view:nil layer:nil debug:debug cancel:isCancelled];
+        point = YYTextCGPointPixelRound(point);
+        [drawLayout drawInContext:context size:size point:point view:nil layer:nil debug:debug cancel:isCancelled];
     };
 
     task.didDisplay = ^(CALayer *layer, BOOL finished) {
+        YYTextLayout *drawLayout = layout;
+        if (layoutUpdated && shrinkLayout) {
+            drawLayout = shrinkLayout;
+        }
         if (!finished) {
             // If the display task is cancelled, we should clear the attachments.
-            for (YYTextAttachment *a in layout.attachments) {
+            for (YYTextAttachment *a in drawLayout.attachments) {
                 if ([a.content isKindOfClass:[UIView class]]) {
                     if (((UIView *)a.content).superview == layer.delegate) {
                         [((UIView *)a.content) removeFromSuperview];
@@ -942,32 +1156,33 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
         }
         [layer removeAnimationForKey:@"contents"];
         
-        YYLabel *view = layer.delegate;
+        __strong YYLabel *view = (YYLabel *)layer.delegate;
         if (!view) return;
         if (view->_state.layoutNeedUpdate && layoutUpdated) {
             view->_innerLayout = layout;
+            view->_shrinkInnerLayout = shrinkLayout;
             view->_state.layoutNeedUpdate = NO;
         }
         
         CGSize size = layer.bounds.size;
-        CGSize boundingSize = layout.textBoundingSize;
+        CGSize boundingSize = drawLayout.textBoundingSize;
         CGPoint point = CGPointZero;
         if (verticalAlignment == YYTextVerticalAlignmentCenter) {
-            if (layout.container.isVerticalForm) {
-                point.x = (size.width - boundingSize.width) * 0.5;
+            if (drawLayout.container.isVerticalForm) {
+                point.x = -(size.width - boundingSize.width) * 0.5;
             } else {
                 point.y = (size.height - boundingSize.height) * 0.5;
             }
         } else if (verticalAlignment == YYTextVerticalAlignmentBottom) {
-            if (layout.container.isVerticalForm) {
-                point.x = (size.width - boundingSize.width);
+            if (drawLayout.container.isVerticalForm) {
+                point.x = -(size.width - boundingSize.width);
             } else {
                 point.y = (size.height - boundingSize.height);
             }
         }
-        point = YYCGPointPixelRound(point);
-        [layout drawInContext:nil size:CGSizeZero point:point view:view layer:layer debug:nil cancel:NULL];
-        for (YYTextAttachment *a in layout.attachments) {
+        point = YYTextCGPointPixelRound(point);
+        [drawLayout drawInContext:nil size:size point:point view:view layer:layer debug:nil cancel:NULL];
+        for (YYTextAttachment *a in drawLayout.attachments) {
             if ([a.content isKindOfClass:[UIView class]]) [attachmentViews addObject:a.content];
             else if ([a.content isKindOfClass:[CALayer class]]) [attachmentLayers addObject:a.content];
         }
@@ -988,6 +1203,104 @@ static dispatch_queue_t YYLabelGetReleaseQueue() {
     };
     
     return task;
+}
+
+@end
+
+
+
+@interface YYLabel(IBInspectableProperties)
+@end
+
+@implementation YYLabel (IBInspectableProperties)
+
+- (BOOL)fontIsBold_:(UIFont *)font {
+    if (![font respondsToSelector:@selector(fontDescriptor)]) return NO;
+    return (font.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) > 0;
+}
+
+- (UIFont *)boldFont_:(UIFont *)font {
+    if (![font respondsToSelector:@selector(fontDescriptor)]) return font;
+    return [UIFont fontWithDescriptor:[font.fontDescriptor fontDescriptorWithSymbolicTraits:UIFontDescriptorTraitBold] size:font.pointSize];
+}
+
+- (UIFont *)normalFont_:(UIFont *)font {
+    if (![font respondsToSelector:@selector(fontDescriptor)]) return font;
+    return [UIFont fontWithDescriptor:[font.fontDescriptor fontDescriptorWithSymbolicTraits:0] size:font.pointSize];
+}
+
+- (void)setFontName_:(NSString *)fontName {
+    if (!fontName) return;
+    UIFont *font = self.font;
+    if ((fontName.length == 0 || [fontName.lowercaseString isEqualToString:@"system"]) && ![self fontIsBold_:font]) {
+        font = [UIFont systemFontOfSize:font.pointSize];
+    } else if ([fontName.lowercaseString isEqualToString:@"system bold"]) {
+        font = [UIFont boldSystemFontOfSize:font.pointSize];
+    } else {
+        if ([self fontIsBold_:font] && ([fontName.lowercaseString rangeOfString:@"bold"].location == NSNotFound)) {
+            font = [UIFont fontWithName:fontName size:font.pointSize];
+            font = [self boldFont_:font];
+        } else {
+            font = [UIFont fontWithName:fontName size:font.pointSize];
+        }
+    }
+    if (font) self.font = font;
+}
+
+- (void)setFontSize_:(CGFloat)fontSize {
+    if (fontSize <= 0) return;
+    UIFont *font = self.font;
+    font = [font fontWithSize:fontSize];
+    if (font) self.font = font;
+}
+
+- (void)setFontIsBold_:(BOOL)fontBold {
+    UIFont *font = self.font;
+    if ([self fontIsBold_:font] == fontBold) return;
+    if (fontBold) {
+        font = [self boldFont_:font];
+    } else {
+        font = [self normalFont_:font];
+    }
+    if (font) self.font = font;
+}
+
+- (void)setInsetTop_:(CGFloat)textInsetTop {
+    UIEdgeInsets insets = self.textContainerInset;
+    insets.top = textInsetTop;
+    self.textContainerInset = insets;
+}
+
+- (void)setInsetBottom_:(CGFloat)textInsetBottom {
+    UIEdgeInsets insets = self.textContainerInset;
+    insets.bottom = textInsetBottom;
+    self.textContainerInset = insets;
+}
+
+- (void)setInsetLeft_:(CGFloat)textInsetLeft {
+    UIEdgeInsets insets = self.textContainerInset;
+    insets.left = textInsetLeft;
+    self.textContainerInset = insets;
+    
+}
+
+- (void)setInsetRight_:(CGFloat)textInsetRight {
+    UIEdgeInsets insets = self.textContainerInset;
+    insets.right = textInsetRight;
+    self.textContainerInset = insets;
+}
+
+- (void)setDebugEnabled_:(BOOL)enabled {
+    if (!enabled) {
+        self.debugOption = nil;
+    } else {
+        YYTextDebugOption *debugOption = [YYTextDebugOption new];
+        debugOption.baselineColor = [UIColor redColor];
+        debugOption.CTFrameBorderColor = [UIColor redColor];
+        debugOption.CTLineFillColor = [UIColor colorWithRed:0.000 green:0.463 blue:1.000 alpha:0.180];
+        debugOption.CGGlyphBorderColor = [UIColor colorWithRed:1.000 green:0.524 blue:0.000 alpha:0.200];
+        self.debugOption = debugOption;
+    }
 }
 
 @end

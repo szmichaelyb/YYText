@@ -10,6 +10,7 @@
 //
 
 #import "YYTextKeyboardManager.h"
+#import "YYTextUtilities.h"
 #import <objc/runtime.h>
 
 
@@ -30,7 +31,7 @@ static int _YYTextKeyboardViewFrameObserverKey;
     if (_keyboardView == keyboardView) return;
     if (_keyboardView) {
         [self removeFrameObserver];
-        objc_setAssociatedObject(_keyboardView, &_YYTextKeyboardViewFrameObserverKey, self, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(_keyboardView, &_YYTextKeyboardViewFrameObserverKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     _keyboardView = keyboardView;
     if (keyboardView) {
@@ -115,6 +116,13 @@ static int _YYTextKeyboardViewFrameObserverKey;
                                              selector:@selector(_keyboardFrameWillChangeNotification:)
                                                  name:UIKeyboardWillChangeFrameNotification
                                                object:nil];
+    // for iPad (iOS 9)
+    if ([UIDevice currentDevice].systemVersion.floatValue >= 9) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(_keyboardFrameDidChangeNotification:)
+                                                     name:UIKeyboardDidChangeFrameNotification
+                                                   object:nil];
+    }
     return self;
 }
 
@@ -137,10 +145,12 @@ static int _YYTextKeyboardViewFrameObserverKey;
 }
 
 + (instancetype)defaultManager {
-    static YYTextKeyboardManager *mgr;
+    static YYTextKeyboardManager *mgr = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        mgr = [[self alloc] _init];
+        if (!YYTextIsAppExtension()) {
+            mgr = [[self alloc] _init];
+        }
     });
     return mgr;
 }
@@ -162,15 +172,18 @@ static int _YYTextKeyboardViewFrameObserverKey;
 }
 
 - (UIWindow *)keyboardWindow {
+    UIApplication *app = YYTextSharedApplication();
+    if (!app) return nil;
+    
     UIWindow *window = nil;
-    for (window in [UIApplication sharedApplication].windows) {
+    for (window in app.windows) {
         if ([self _getKeyboardViewFromWindow:window]) return window;
     }
-    window = [UIApplication sharedApplication].keyWindow;
+    window = app.keyWindow;
     if ([self _getKeyboardViewFromWindow:window]) return window;
     
     NSMutableArray *kbWindows = nil;
-    for (window in [UIApplication sharedApplication].windows) {
+    for (window in app.windows) {
         NSString *windowName = NSStringFromClass(window.class);
         if ([self _systemVersion] < 9) {
             // UITextEffectsWindow
@@ -194,18 +207,20 @@ static int _YYTextKeyboardViewFrameObserverKey;
     if (kbWindows.count == 1) {
         return kbWindows.firstObject;
     }
-    
     return nil;
 }
 
 - (UIView *)keyboardView {
+    UIApplication *app = YYTextSharedApplication();
+    if (!app) return nil;
+    
     UIWindow *window = nil;
     UIView *view = nil;
-    for (window in [UIApplication sharedApplication].windows) {
+    for (window in app.windows) {
         view = [self _getKeyboardViewFromWindow:window];
         if (view) return view;
     }
-    window = [UIApplication sharedApplication].keyWindow;
+    window = app.keyWindow;
     view = [self _getKeyboardViewFromWindow:window];
     if (view) return view;
     return nil;
@@ -238,11 +253,11 @@ static int _YYTextKeyboardViewFrameObserverKey;
 
 #pragma mark - private
 
-- (CGFloat)_systemVersion {
-    static CGFloat v;
+- (double)_systemVersion {
+    static double v;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        v = [UIDevice currentDevice].systemVersion.floatValue;
+        v = [UIDevice currentDevice].systemVersion.doubleValue;
     });
     return v;
 }
@@ -345,6 +360,29 @@ static int _YYTextKeyboardViewFrameObserverKey;
     }
 }
 
+- (void)_keyboardFrameDidChangeNotification:(NSNotification *)notif {
+    if (![notif.name isEqualToString:UIKeyboardDidChangeFrameNotification]) return;
+    NSDictionary *info = notif.userInfo;
+    if (!info) return;
+    
+    [self _initFrameObserver];
+    
+    NSValue *afterValue = info[UIKeyboardFrameEndUserInfoKey];
+    CGRect after = afterValue.CGRectValue;
+    
+    // ignore zero end frame
+    if (after.size.width <= 0 && after.size.height <= 0) return;
+    
+    _notificationToFrame = after;
+    _notificationCurve = UIViewAnimationCurveEaseInOut;
+    _notificationDuration = 0;
+    _hasNotification = YES;
+    _lastIsNotification = YES;
+    
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(_notifyAllObservers) object:nil];
+    [self performSelector:@selector(_notifyAllObservers) withObject:nil afterDelay:0 inModes:@[NSRunLoopCommonModes]];
+}
+
 - (void)_keyboardFrameChanged:(UIView *)keyboard {
     if (keyboard != self.keyboardView) return;
     
@@ -362,13 +400,16 @@ static int _YYTextKeyboardViewFrameObserverKey;
 }
 
 - (void)_notifyAllObservers {
+    UIApplication *app = YYTextSharedApplication();
+    if (!app) return;
+    
     UIView *keyboard = self.keyboardView;
     UIWindow *window = keyboard.window;
     if (!window) {
-        window = [UIApplication sharedApplication].keyWindow;
+        window = app.keyWindow;
     }
     if (!window) {
-        window = [UIApplication sharedApplication].windows.firstObject;
+        window = app.windows.firstObject;
     }
     
     YYTextKeyboardTransition trans = {0};
@@ -392,7 +433,7 @@ static int _YYTextKeyboardViewFrameObserverKey;
         
         // Fix iPad(iOS7) keyboard frame error after rorate device when the keyboard is not docked to bottom.
         if (((int)[self _systemVersion]) == 7) {
-            UIInterfaceOrientation ori = [UIApplication sharedApplication].statusBarOrientation;
+            UIInterfaceOrientation ori = app.statusBarOrientation;
             if (_fromOrientation != UIInterfaceOrientationUnknown && _fromOrientation != ori) {
                 switch (ori) {
                     case UIInterfaceOrientationPortrait: {
@@ -431,7 +472,7 @@ static int _YYTextKeyboardViewFrameObserverKey;
     }
     
     if (!CGRectEqualToRect(trans.toFrame, _fromFrame)) {
-        for (id<YYTextKeyboardObserver> observer in _observers) {
+        for (id<YYTextKeyboardObserver> observer in _observers.copy) {
             if ([observer respondsToSelector:@selector(keyboardChangedWithTransition:)]) {
                 [observer keyboardChangedWithTransition:trans];
             }
@@ -442,15 +483,18 @@ static int _YYTextKeyboardViewFrameObserverKey;
     _hasObservedChange = NO;
     _fromFrame = trans.toFrame;
     _fromVisible = trans.toVisible;
-    _fromOrientation = [UIApplication sharedApplication].statusBarOrientation;
+    _fromOrientation = app.statusBarOrientation;
 }
 
 - (CGRect)convertRect:(CGRect)rect toView:(UIView *)view {
+    UIApplication *app = YYTextSharedApplication();
+    if (!app) return CGRectZero;
+    
     if (CGRectIsNull(rect)) return rect;
     if (CGRectIsInfinite(rect)) return rect;
     
-    UIWindow *mainWindow = [UIApplication sharedApplication].keyWindow;
-    if (!mainWindow) mainWindow = [UIApplication sharedApplication].windows.firstObject;
+    UIWindow *mainWindow = app.keyWindow;
+    if (!mainWindow) mainWindow = app.windows.firstObject;
     if (!mainWindow) { // no window ?!
         if (view) {
             [view convertRect:rect fromView:nil];
